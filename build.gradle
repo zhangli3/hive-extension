@@ -1,0 +1,307 @@
+apply plugin: 'java'
+ext {
+    privateRepo = 'http://10.1.253.223:8081/nexus/content/groups/ailk'
+    cdhRepo = "https://repository.cloudera.com/artifactory/cloudera-repos/"
+    privateDeployRepo = 'http://10.1.253.223:8081/nexus/content/repositories/ailk-snapshots'
+    forrest_home = System.getProperty('FORREST_HOME', "/home/cloudetl/apache-forrest-0.9")
+    oc_version = 'och2.0.0-beta'
+    zookeeper_version = '3.4.5-cdh4.2.1'
+    hadoop_common_version = '2.0.0-cdh4.2.1'
+    hadoop_common_mr1_version = '2.0.0-mr1-cdh4.2.1'
+    apache_hbase_version = '0.94.12-security'
+    apache_hive_version = '0.12.0'
+    apache_hive_legacy_version = '0.11.0'
+    hadoop_lzo_version = '0.4.19'
+    auditor_version = 'och2.0.0-beta'
+    apache_hive_extension_version = '0.12.0-och2.0.0-beta'
+    apache_hive_extension_legacy_version = '0.11.0-och2.0.0-beta'
+}
+
+repositories {
+    maven {
+        url privateRepo
+    }
+}
+configurations {
+    auditor_plugin
+    hbase_cdh_jars
+}
+dependencies {
+    auditor_plugin "com.ailk.oci.auditor:auditor-plugin:$auditor_version"
+    hbase_cdh_jars ("","")
+}
+
+def getFromMaven(src, destDir) {
+    s = src.split("[:@]")
+    srcUrl = "http://10.1.253.223:8081/nexus/service/local/artifact/maven/redirect?r=ailk&g=${s[0]}&a=${s[1]}&v=${s[2]}&e=${s[3]}"
+    ant.echo("downloading:$srcUrl to:$destDir/${s[1]}-${s[2]}.${s[3]}")
+    ant.mkdir(dir: destDir)
+    ant.get(src: srcUrl, dest: "$destDir/${s[1]}-${s[2]}.${s[3]}", verbose: true)
+}
+
+task auditor() {
+    doLast {
+        getFromMaven("com.ailk.oci.auditor:auditor-server:$auditor_version@jar", "$buildDir/ochadoop")
+    }
+}
+
+task zookeeper_clean(type: Exec) {
+    workingDir 'zookeeper'
+    commandLine 'ant', '-Dversion=' + zookeeper_version, 'clean'
+}
+
+task zookeeper_build_tar(dependsOn: zookeeper_clean, type: Exec) {
+    workingDir 'zookeeper'
+    commandLine 'ant', "-Dversion=$zookeeper_version", "-Divy.url=$privateRepo/org/apache/ivy/ivy", 'tar'
+}
+
+task zookeeper(dependsOn: zookeeper_build_tar) {
+    doLast() {
+        ant.delete(dir: 'zookeeper/build/tar')
+        ant.gunzip(src: "zookeeper/build/zookeeper-${zookeeper_version}.tar.gz")
+        ant.untar(src: "zookeeper/build/zookeeper-${zookeeper_version}.tar", dest: 'zookeeper/build/tar')
+        getFromMaven("org.apache.zookeeper:zookeeper:$zookeeper_version@jar", "zookeeper/build/tar/zookeeper-${zookeeper_version}")
+        ant.move(file: "zookeeper/build/tar/zookeeper-${zookeeper_version}", tofile: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}")
+        ant.tar(basedir: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}", destfile: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}.tar")
+        ant.gzip(src: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}.tar", destfile: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}.tar.gz")
+        ant.move(file: "zookeeper/build/tar/zookeeper-${zookeeper_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/zookeeper-${zookeeper_version}-${oc_version}.tar.gz")
+    }
+}
+task hadoop_common_native(type: Exec) {
+    workingDir 'hadoop-common'
+    commandLine 'mvn', "-Pdist,native", "-DskipTests", "-Dmaven.javadoc.skip=true", "-Dtar", "clean", "package"
+}
+
+task hadoop_lzo(type: Exec) {
+//wget http://www.oberhumer.com/opensource/lzo/download/lzo-2.06.tar.gz
+//tar -xvzf lzo-2.06.tar.gz
+//cd lzo-2.06
+//./configure --enable-shared --prefix /home/cloudetl/app/lzo-2.06
+//make && sudo make install
+    workingDir 'hadoop-lzo'
+    commandLine 'mvn', "-DskipTests", "clean", "package"
+    environment C_INCLUDE_PATH: System.getProperty('LZO_HOME', "/home/cloudetl/app/lzo-2.06") + "/include"
+    environment LIBRARY_PATH: System.getProperty('LZO_HOME', "/home/cloudetl/app/lzo-2.06") + "/lib"
+}
+task hadoop_common(dependsOn: [auditor, hadoop_common_native, hadoop_lzo]) {
+    doLast() {
+        ant.mkdir(dir: "hadoop-common/build")
+        getFromMaven("org.apache.hadoop:hadoop-dist:$hadoop_common_version@tar.gz", "hadoop-common/build")
+        ant.delete(dir: 'hadoop-common/build/tar')
+        ant.gunzip(src: "hadoop-common/build/hadoop-dist-${hadoop_common_version}.tar.gz")
+        ant.untar(src: "hadoop-common/build/hadoop-dist-${hadoop_common_version}.tar", dest: 'hadoop-common/build/tar')
+        ant.mkdir(dir: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}")
+        rootdir = "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}/hadoop-${hadoop_common_version}-${oc_version}"
+        ant.move(file: "hadoop-common/build/tar/hadoop-${hadoop_common_version}", tofile: rootdir)
+        //replace with custom changes
+
+        ant.delete(dir: 'hadoop-common/build/native_tar')
+        ant.copy(file: "hadoop-common/hadoop-dist/target/hadoop-${hadoop_common_version}.tar.gz", todir: "hadoop-common/build/native_tar/")
+        ant.gunzip(src: "hadoop-common/build/native_tar/hadoop-${hadoop_common_version}.tar.gz")
+        ant.untar(src: "hadoop-common/build/native_tar/hadoop-${hadoop_common_version}.tar", dest: 'hadoop-common/build/native_tar')
+        ant.delete(dir: "$rootdir/lib/native")
+        ant.copy(todir: "$rootdir/lib/native") {
+            fileset(dir: "hadoop-common/build/native_tar/hadoop-${hadoop_common_version}/lib/native")
+        }
+        ant.copy(todir: "$rootdir/lib/native") {
+            fileset(dir: "hadoop-lzo/target/native/Linux-amd64-64/lib")
+        }
+
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/core-site.xml", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/mapred-site.xml", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/log4j.properties", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/hadoop-env.sh", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/hdfs-site.xml", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/etc/hadoop/auditor.client.properties", todir: "$rootdir/etc/hadoop/")
+        ant.copy(file: "hadoop-common-oc/libexec/hadoop-config.sh", todir: "$rootdir/libexec/")
+
+        ant.mkdir(dir: "$rootdir/share/hadoop/auditor")
+        project.copy({
+            into "$rootdir/share/hadoop/auditor/lib"
+            from configurations.auditor_plugin
+        })
+        ant.move(file: "$rootdir/share/hadoop/auditor/lib/auditor-plugin-${auditor_version}.jar", toFile: "$rootdir/share/hadoop/auditor/auditor-plugin-${auditor_version}.jar")
+
+        ant.copy(file: "hadoop-lzo/target/hadoop-lzo-${hadoop_lzo_version}.jar", todir: "$rootdir/share/hadoop/common/")
+
+        //end replace
+        ant.tar(basedir: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}", destfile: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}.tar")
+        ant.gzip(src: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}.tar", destfile: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}.tar.gz")
+        ant.move(file: "hadoop-common/build/tar/hadoop-${hadoop_common_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/hadoop-${hadoop_common_version}-${oc_version}.tar.gz")
+    }
+}
+task hadoop_common_mr1_clean(type: Exec) {
+    workingDir 'hadoop-common-mr1'
+    commandLine 'ant', "-Dmvnrepo=$privateRepo", "-Drepo.maven.org=$privateRepo", "-Dforrest.home=$forrest_home", "clean"
+}
+
+task hadoop_common_mr1_tar(dependsOn: hadoop_common_mr1_clean, type: Exec) {
+    workingDir 'hadoop-common-mr1'
+    commandLine 'ant', "-Dmvnrepo=$privateRepo", "-Drepo.maven.org=$privateRepo", "-Dreactor.repo=$privateRepo", "-Dforrest.home=$forrest_home", 'tar'
+    environment JAVA_HOME: System.getProperty('JAVA6_HOME', "/home/cloudetl/bin/jdk1.6.0_21")
+}
+
+task hadoop_common_mr1(dependsOn: hadoop_common_mr1_tar) {
+    doLast() {
+        ant.delete(dir: 'hadoop-common-mr1/build/tar')
+        ant.mkdir(dir: "hadoop-common-mr1/build/tar")
+        ant.copy(file: "hadoop-common-mr1/build/hadoop-${hadoop_common_mr1_version}.tar.gz", todir: "hadoop-common-mr1/build/tar")
+        ant.gunzip(src: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}.tar.gz")
+        ant.untar(src: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}.tar", dest: 'hadoop-common-mr1/build/tar')
+        ant.mkdir(dir: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}")
+        rootdir = "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}/hadoop-${hadoop_common_mr1_version}-${oc_version}"
+        ant.move(file: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}", tofile: rootdir)
+        //replace with custom changes
+
+        ant.copy(file: "hadoop-common-mr1-oc/conf/core-site.xml", todir: "$rootdir/conf/")
+        ant.copy(file: "hadoop-common-mr1-oc/conf/log4j.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "hadoop-common-mr1-oc/conf/hdfs-site.xml", todir: "$rootdir/conf/")
+        getFromMaven("org.apache.hadoop:hadoop-core:$hadoop_common_mr1_version@jar", "$rootdir")
+        getFromMaven("org.apache.hadoop:hadoop-examples:$hadoop_common_mr1_version@jar", "$rootdir")
+        getFromMaven("org.apache.hadoop:hadoop-test:$hadoop_common_mr1_version@jar", "$rootdir")
+        getFromMaven("org.apache.hadoop:hadoop-tools:$hadoop_common_mr1_version@jar", "$rootdir")
+
+        //end replace
+        ant.tar(basedir: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}", destfile: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}.tar")
+        ant.gzip(src: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}.tar", destfile: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}.tar.gz")
+        ant.move(file: "hadoop-common-mr1/build/tar/hadoop-${hadoop_common_mr1_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/hadoop-${hadoop_common_mr1_version}-${oc_version}.tar.gz")
+    }
+}
+
+
+task apache_hbase_tar(type: Exec) {
+    workingDir 'apache-hbase'
+    commandLine 'mvn', "-T", "2C", '-Psecurity', '-DskipTests', "-Dmaven.javadoc.skip=true", "clean", 'package'
+}
+task apache_hbase(dependsOn: [auditor, apache_hbase_tar]) {
+    doLast {
+        ant.delete(dir: 'apache-hbase/target/tar')
+        ant.mkdir(dir: "apache-hbase/target/tar")
+        ant.copy(file: "apache-hbase/target/hbase-${apache_hbase_version}.tar.gz", todir: "apache-hbase/target/tar")
+        ant.gunzip(src: "apache-hbase/target/tar/hbase-${apache_hbase_version}.tar.gz")
+        ant.untar(src: "apache-hbase/target/tar/hbase-${apache_hbase_version}.tar", dest: 'apache-hbase/target/tar')
+        ant.mkdir(dir: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}")
+        rootdir = "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}/hbase-${apache_hbase_version}-${oc_version}"
+        ant.move(file: "apache-hbase/target/tar/hbase-${apache_hbase_version}", tofile: rootdir)
+        //replace with custom changes
+
+	//get chd jars
+	 getFromMaven("com.cloudera.cdh:auditor-server:$auditor_version@jar", "$buildDir/ochadoop")
+
+        ant.copy(file: "apache-hbase-oc/bin/hbase", todir: "$rootdir/bin/")
+        ant.copy(file: "apache-hbase-oc/conf/log4j.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hbase-oc/conf/auditor.client.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hbase-oc/conf/hbase-site.xml", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hbase-oc/conf/hbase-env.sh", todir: "$rootdir/conf/")
+
+        ant.mkdir(dir: "$rootdir/auditor")
+        project.copy({
+            into "$rootdir/auditor/lib"
+            from configurations.auditor_plugin
+        })
+        ant.move(file: "$rootdir/auditor/lib/auditor-plugin-${auditor_version}.jar", toFile: "$rootdir/auditor/auditor-plugin-${auditor_version}.jar")
+
+        //end replace
+        ant.tar(basedir: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}", destfile: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}.tar")
+        ant.gzip(src: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}.tar", destfile: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}.tar.gz")
+        ant.move(file: "apache-hbase/target/tar/hbase-${apache_hbase_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/hbase-${apache_hbase_version}-${oc_version}.tar.gz")
+    }
+}
+
+task apache_hive_tar(type: Exec) {
+    workingDir 'apache-hive'
+    commandLine 'ant', 'clean', "-Drepo.maven.org=$privateRepo", "-Divy.mvn.repo=$privateRepo", "-Dmvnrepo=$privateRepo", "-Dskip.javadoc=true", "tar"
+}
+task apache_hive(dependsOn: [apache_hive_tar]) {
+    doLast {
+        ant.delete(dir: 'apache-hive/build/tar')
+        ant.mkdir(dir: "apache-hive/build/tar")
+        ant.copy(file: "apache-hive/build/hive-${apache_hive_version}.tar.gz", todir: "apache-hive/build/tar")
+        ant.gunzip(src: "apache-hive/build/tar/hive-${apache_hive_version}.tar.gz")
+        ant.untar(src: "apache-hive/build/tar/hive-${apache_hive_version}.tar", dest: 'apache-hive/build/tar')
+        ant.mkdir(dir: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}")
+        rootdir = "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}/hive-${apache_hive_version}-${oc_version}"
+        ant.move(file: "apache-hive/build/tar/hive-${apache_hive_version}", tofile: rootdir)
+        //replace with custom changes
+
+        ant.copy(file: "apache-hive-oc/bin/hive", todir: "$rootdir/bin/")
+        ant.copy(file: "apache-hive-oc/conf/log4j.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-oc/conf/auditor.exec.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-oc/conf/auditor.meta.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-oc/conf/hive-site.xml", todir: "$rootdir/conf/")
+
+        ant.mkdir(dir: "$rootdir/hive-extension")
+        //getFromMaven("com.ailk.oci.hive:hive-extension:$apache_hive_extension_version@jar", "$rootdir")
+        getFromMaven("com.ailk.oci.hive:hive-extension:$apache_hive_extension_version@jar", "$rootdir/hive-extension")
+
+        ant.mkdir(dir: "$rootdir/auditor")
+        project.copy({
+            into "$rootdir/auditor/lib"
+            from configurations.auditor_plugin
+        })
+        ant.move(file: "$rootdir/auditor/lib/auditor-plugin-${auditor_version}.jar", toFile: "$rootdir/auditor/auditor-plugin-${auditor_version}.jar")
+
+        //end replace
+        ant.tar(basedir: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}", destfile: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}.tar")
+        ant.gzip(src: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}.tar", destfile: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}.tar.gz")
+        ant.move(file: "apache-hive/build/tar/hive-${apache_hive_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/hive-${apache_hive_version}-${oc_version}.tar.gz")
+    }
+}
+
+task apache_hive_legacy_skip_doc() {
+    doLast {
+        String contents = new File('apache-hive-legacy/build.xml').getText('UTF-8')
+        contents = contents.replaceAll('<target name="javadoc"', '<target name="javadoc" unless="skip.javadoc"')
+        new File('apache-hive-legacy/build.skip.javadoc.xml').write(contents, 'UTF-8')
+    }
+}
+task apache_hive_legacy_tar(dependsOn: [apache_hive_legacy_skip_doc], type: Exec) {
+    workingDir 'apache-hive-legacy'
+    commandLine 'ant', "-buildfile", "build.skip.javadoc.xml", 'clean', "-Drepo.maven.org=$privateRepo", "-Divy.mvn.repo=$privateRepo", "-Dmvnrepo=$privateRepo", "-Dskip.javadoc=true", "tar"
+    environment JAVA_HOME: System.getProperty('JAVA6_HOME', "/home/cloudetl/bin/jdk1.6.0_21")
+}
+task apache_hive_legacy(dependsOn: [apache_hive_legacy_tar]) {
+    doLast {
+        ant.delete(dir: 'apache-hive-legacy/build/tar')
+        ant.mkdir(dir: "apache-hive-legacy/build/tar")
+        ant.copy(file: "apache-hive-legacy/build/hive-${apache_hive_legacy_version}.tar.gz", todir: "apache-hive-legacy/build/tar")
+        ant.gunzip(src: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}.tar.gz")
+        ant.untar(src: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}.tar", dest: 'apache-hive-legacy/build/tar')
+        ant.mkdir(dir: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}")
+        rootdir = "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}/hive-${apache_hive_legacy_version}-${oc_version}"
+        ant.move(file: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}", tofile: rootdir)
+        //replace with custom changes
+
+        ant.copy(file: "apache-hive-legacy-oc/bin/hive", todir: "$rootdir/bin/")
+        ant.copy(file: "apache-hive-legacy-oc/conf/log4j.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-legacy-oc/conf/auditor.exec.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-legacy-oc/conf/auditor.meta.properties", todir: "$rootdir/conf/")
+        ant.copy(file: "apache-hive-legacy-oc/conf/hive-site.xml", todir: "$rootdir/conf/")
+
+        ant.mkdir(dir: "$rootdir/hive-extension")
+        getFromMaven("com.ailk.oci.hive:hive-extension:$apache_hive_extension_legacy_version@jar", "$rootdir/hive-extension")
+
+        ant.mkdir(dir: "$rootdir/auditor")
+        project.copy({
+            into "$rootdir/auditor/lib"
+            from configurations.auditor_plugin
+        })
+        ant.move(file: "$rootdir/auditor/lib/auditor-plugin-${auditor_version}.jar", toFile: "$rootdir/auditor/auditor-plugin-${auditor_version}.jar")
+
+        //end replace
+        ant.tar(basedir: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}", destfile: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}.tar")
+        ant.gzip(src: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}.tar", destfile: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}.tar.gz")
+        ant.move(file: "apache-hive-legacy/build/tar/hive-${apache_hive_legacy_version}-${oc_version}.tar.gz", tofile: "$buildDir/ochadoop/hive-${apache_hive_legacy_version}-${oc_version}.tar.gz")
+    }
+}
+
+task all(dependsOn: [auditor, zookeeper, hadoop_common, hadoop_common_mr1, apache_hbase, apache_hive, apache_hive_legacy]) {
+    doLast {
+        ant.mkdir(dir: "build/tar/ochadoop-${oc_version}")
+        ant.move(file: "build/ochadoop", tofile: "build/tar/ochadoop-${oc_version}/ochadoop-${oc_version}")
+        ant.tar(basedir: "build/tar/ochadoop-${oc_version}", destfile: "build/tar/ochadoop-${oc_version}.tar")
+        ant.gzip(src: "build/tar/ochadoop-${oc_version}.tar", destfile: "build/tar/ochadoop-${oc_version}.tar.gz")
+    }
+}
+
+
