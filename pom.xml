@@ -12,7 +12,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <cdh4.hadoop.version>2.0.0-cdh4.2.1</cdh4.hadoop.version>
         <cdh4.hadoop.mr1.version>2.0.0-mr1-cdh4.2.1</cdh4.hadoop.mr1.version>
-        <cdh4.hive.version>0.11.0</cdh4.hive.version>
+        <cdh4.hive.version>0.12.0</cdh4.hive.version>
         <cdh4.hbase.version>0.94.12</cdh4.hbase.version>
     </properties>
     <dependencyManagement>
